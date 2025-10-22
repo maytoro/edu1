@@ -1,4 +1,4 @@
-name: Publish Docker Azure image
+name: Publish Docker Azure image to ACR (GitHub Actions)
 
 on:      
   workflow_dispatch:
@@ -10,38 +10,69 @@ on:
     
 jobs:
   push_to_registry:
-    name: Push Docker image to Docker Hub
+    name: Push Docker image to ACR and update manifest
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # 매니페스트 커밋/푸시 위해 필요
     steps:
       - name: Check out the repo
         uses: actions/checkout@v4
       
-      - name: Log in to Docker Hub
+      # ACR 로그인 (현재 방식 유지)
+      - name: Log in to ACR (docker login)
         uses: azure/docker-login@v1
         with:
           login-server: ${{ secrets.AZURE_URL }}
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
       
+      # 이미지 이름 메타 (명시적으로 ACR 경로 지정 권장)
       - name: Extract metadata (tags, labels) for Docker
         id: meta
-        uses: docker/metadata-action@98669ae865ea3cffbcbaa878cf57c20bbf1c6c38
+        uses: docker/metadata-action@v5
         with:
           images: ${{ github.repository }}
           tags: ${{ github.event.inputs.name }}
       
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Build and Push to ACR
-        uses: docker/build-push-action@v2
+        id: buildpush
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          tags: ${{ secrets.AZURE_URL }}/${{ steps.meta.outputs.tags }}
-          #tags: ${{ secrets.IMAGE_TAG }}          
+          tags: ${{ steps.meta.outputs.tags }}     
       
-      #- name: Build and push Docker image
-      #  uses: docker/build-push-action@ad44023a93711e3deb337508980b4b5e9bcdc5dc
-      #  with:
-      #    context: .
-      #    push: true
-      #    tags: ${{ steps.meta.outputs.tags }}
-      #    labels: ${{ steps.meta.outputs.labels }}
+      # 여기서 digest를 얻는다(위 build-push-id의 출력 사용)
+      - name: Read pushed digest
+        id: digest
+        run: |
+          echo "digest=${{ steps.buildpush.outputs.digest }}" >> $GITHUB_OUTPUT
+          echo "Got digest: ${{ steps.buildpush.outputs.digest }}"
+
+      # k8s/deployment.yaml 의 image 값을 digest로 치환
+      # 현재 라인은: image: acr0323.azurecr.io/maytoro/edu1:v1
+      # 최종 결과:   image: acr0323.azurecr.io/maytoro/edu1@sha256:xxxx
+      - name: Update Kubernetes manifest image to digest
+        run: |
+          FILE="k8s/deployment.yaml"
+          REPO="${{ secrets.AZURE_URL }}/maytoro/edu1"
+          DIGEST="${{ steps.digest.outputs.digest }}"
+          # image: <repo>:<any>  -> image: <repo>@<digest>
+          sed -i "s#^\(\s*image:\s*\)${REPO}:.*#\1${REPO}@${DIGEST}#g" "$FILE"
+          echo "---- After update ----"
+          grep -n "image:" "$FILE"
+
+      - name: Commit and push manifest update
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add k8s/deployment.yaml
+          git commit -m "deploy: ${{
+            steps.meta.outputs.tags
+          }} -> ${{
+            steps.digest.outputs.digest
+          }}"
+          git push
