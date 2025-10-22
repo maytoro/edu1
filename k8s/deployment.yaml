@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
       - name: edu1
-        image: acr0323.azurecr.io/maytoro/edu1:v1
+        image: acr0323.azurecr.io/maytoro/edu1@sha256:83283fb80350723211d52d597245cb6ba347e19fb32c39ef8a6e4c7d30160e34
         imagePullPolicy: Always
         ports:
         - containerPort: 8080
