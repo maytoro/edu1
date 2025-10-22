@@ -1,4 +1,4 @@
-name: Publish Docker Azure image
+name: Publish Docker Azure image with manifest update
 
 on:
   workflow_dispatch:
