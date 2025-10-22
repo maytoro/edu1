@@ -1,42 +1,45 @@
-name: Publish Docker Azure image to ACR (GitHub Actions)
+name: Publish Docker Azure image
 
-on:      
+on:
   workflow_dispatch:
     inputs:
       name:
         description: "Docker TAG"
         required: true
-        default: "master"
-    
+        default: "v1"
+
 jobs:
   push_to_registry:
-    name: Push Docker image to ACR and update manifest
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # 매니페스트 커밋/푸시 위해 필요
+      contents: write
+    env:
+      ACR: acr0323.azurecr.io                # 절대 https:// 붙이지 말 것
+      IMAGE_PATH: maytoro/edu1               # ACR 리포지토리
+      TAG: ${{ github.event.inputs.name }}   # 예: v3
     steps:
-      - name: Check out the repo
-        uses: actions/checkout@v4
-      
-      # ACR 로그인 (현재 방식 유지)
-      - name: Log in to ACR (docker login)
+      - uses: actions/checkout@v4
+
+      # 0) 필수 값 검증(비어 있으면 fail)
+      - name: Validate required env
+        run: |
+          test -n "${ACR}" || (echo "ACR missing" && exit 1)
+          test -n "${IMAGE_PATH}" || (echo "IMAGE_PATH missing" && exit 1)
+          test -n "${TAG}" || (echo "TAG missing" && exit 1)
+
+      # 1) ACR 로그인 (Admin user를 쓰는 현재 방식)
+      - name: Log in to ACR
         uses: azure/docker-login@v1
         with:
-          login-server: ${{ secrets.AZURE_URL }}
+          login-server: ${{ env.ACR }}
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
-      
-      # 이미지 이름 메타 (명시적으로 ACR 경로 지정 권장)
-      - name: Extract metadata (tags, labels) for Docker
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ github.repository }}
-          tags: ${{ github.event.inputs.name }}
-      
+
+      # 2) Buildx
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
+      # 3) Build & Push (풀 경로를 직접 명시)
       - name: Build and Push
         id: buildpush
         uses: docker/build-push-action@v6
@@ -46,17 +49,25 @@ jobs:
           tags: |
             ${{ env.ACR }}/${{ env.IMAGE_PATH }}:${{ env.TAG }}
             ${{ env.ACR }}/${{ env.IMAGE_PATH }}:latest
+          platforms: linux/amd64
 
+      # 4) Digest 읽기
       - name: Read pushed digest
         id: digest
-        run: echo "digest=${{ steps.buildpush.outputs.digest }}" >> $GITHUB_OUTPUT
+        run: |
+          echo "digest=${{ steps.buildpush.outputs.digest }}" >> $GITHUB_OUTPUT
+          echo "Pushed digest: ${{ steps.buildpush.outputs.digest }}"
 
+      # 5) 매니페스트의 image를 digest로 치환해 커밋
       - name: Update manifest to digest
         run: |
           FILE="k8s/deployment.yaml"
           REPO="${{ env.ACR }}/${{ env.IMAGE_PATH }}"
           DIGEST="${{ steps.digest.outputs.digest }}"
+          # image: acr0323.azurecr.io/maytoro/edu1:...  ->  image: acr0323.azurecr.io/maytoro/edu1@sha256:...
           sed -i "s#^\(\s*image:\s*\)${REPO}:.*#\1${REPO}@${DIGEST}#g" "$FILE"
+          echo "After update:"
+          grep -n "image:" "$FILE"
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add "$FILE"
