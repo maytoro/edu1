@@ -37,42 +37,28 @@ jobs:
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and Push to ACR
+      - name: Build and Push
         id: buildpush
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          tags: ${{ steps.meta.outputs.tags }}     
-      
-      # 여기서 digest를 얻는다(위 build-push-id의 출력 사용)
+          tags: |
+            ${{ env.ACR }}/${{ env.IMAGE_PATH }}:${{ env.TAG }}
+            ${{ env.ACR }}/${{ env.IMAGE_PATH }}:latest
+
       - name: Read pushed digest
         id: digest
-        run: |
-          echo "digest=${{ steps.buildpush.outputs.digest }}" >> $GITHUB_OUTPUT
-          echo "Got digest: ${{ steps.buildpush.outputs.digest }}"
+        run: echo "digest=${{ steps.buildpush.outputs.digest }}" >> $GITHUB_OUTPUT
 
-      # k8s/deployment.yaml 의 image 값을 digest로 치환
-      # 현재 라인은: image: acr0323.azurecr.io/maytoro/edu1:v1
-      # 최종 결과:   image: acr0323.azurecr.io/maytoro/edu1@sha256:xxxx
-      - name: Update Kubernetes manifest image to digest
+      - name: Update manifest to digest
         run: |
           FILE="k8s/deployment.yaml"
-          REPO="${{ secrets.AZURE_URL }}/maytoro/edu1"
+          REPO="${{ env.ACR }}/${{ env.IMAGE_PATH }}"
           DIGEST="${{ steps.digest.outputs.digest }}"
-          # image: <repo>:<any>  -> image: <repo>@<digest>
           sed -i "s#^\(\s*image:\s*\)${REPO}:.*#\1${REPO}@${DIGEST}#g" "$FILE"
-          echo "---- After update ----"
-          grep -n "image:" "$FILE"
-
-      - name: Commit and push manifest update
-        run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add k8s/deployment.yaml
-          git commit -m "deploy: ${{
-            steps.meta.outputs.tags
-          }} -> ${{
-            steps.digest.outputs.digest
-          }}"
+          git add "$FILE"
+          git commit -m "deploy: ${REPO}@${DIGEST}"
           git push
